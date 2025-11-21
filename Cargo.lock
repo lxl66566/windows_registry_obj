@@ -42,4 +42,5 @@ name = "windows_registry_obj"
 version = "0.1.0"
 dependencies = [
  "windows-registry",
+ "windows-result",
 ]

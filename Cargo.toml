@@ -2,6 +2,25 @@
 name = "windows_registry_obj"
 version = "0.1.0"
 edition = "2024"
+authors = ["lxl66566 <lxl66566@gmail.com>"]
+description = "Objective Windows Registry manipulation."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/lxl66566/windows_registry_obj"
+homepage = "https://github.com/lxl66566/windows_registry_obj"
+documentation = "https://docs.rs/windows_registry_obj"
+keywords = ["windows", "registry", "reg", "utility", "wrapper"]
+categories = ["os::windows-apis", "config"]
+exclude = [".gitignore", ".github/*"]
 
 [dependencies]
 windows-registry = "0.6"
+windows-result = "0.4"
+
+[features]
+default = []
+# serde = ["dep:serde"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
