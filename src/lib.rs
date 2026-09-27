@@ -165,7 +165,7 @@ impl BaseKey {
 }
 
 /// Represents the data type of a registry value
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RegValueData<'a> {
     String(Cow<'a, str>),
     ExpandableString(Cow<'a, str>),
@@ -217,6 +217,18 @@ impl<'a> From<&'a [u8]> for RegValueData<'a> {
     }
 }
 
+impl From<Vec<String>> for RegValueData<'_> {
+    fn from(value: Vec<String>) -> Self {
+        RegValueData::MultiString(value.into_iter().map(Cow::Owned).collect())
+    }
+}
+
+impl<'a, const N: usize> From<&'a [&'a str; N]> for RegValueData<'a> {
+    fn from(value: &'a [&'a str; N]) -> Self {
+        RegValueData::MultiString(value.iter().map(|s| Cow::Borrowed(*s)).collect())
+    }
+}
+
 impl From<&'_ RegValueData<'_>> for Type {
     fn from(val: &'_ RegValueData<'_>) -> Self {
         match val {
@@ -250,6 +262,60 @@ impl RegValueData<'_> {
             RegValueData::QWord(i) => RegValueData::QWord(i),
         }
     }
+
+    /// The content when this is a `REG_SZ` value.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The content when this is a `REG_EXPAND_SZ` value.
+    #[must_use]
+    pub fn as_expandable_string(&self) -> Option<&str> {
+        match self {
+            Self::ExpandableString(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The content when this is a `REG_DWORD` value.
+    #[must_use]
+    pub fn as_u32(&self) -> Option<u32> {
+        match self {
+            Self::DWord(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The content when this is a `REG_QWORD` value.
+    #[must_use]
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::QWord(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The content when this is a `REG_BINARY` value.
+    #[must_use]
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Binary(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The content when this is a `REG_MULTI_SZ` value.
+    #[must_use]
+    pub fn as_multi_string(&self) -> Option<&[Cow<'_, str>]> {
+        match self {
+            Self::MultiString(value) => Some(value.as_slice()),
+            _ => None,
+        }
+    }
 }
 
 impl TryFrom<Value> for RegValueDataOwned {
@@ -275,7 +341,7 @@ impl TryFrom<Value> for RegValueDataOwned {
     }
 }
 /// A structure that represents a registry value, including its name and data
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RegValue<'a> {
     pub name: Cow<'a, str>,
     pub data: RegValueData<'a>,
