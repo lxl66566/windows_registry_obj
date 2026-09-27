@@ -385,6 +385,7 @@ impl<'a> Registry<'a> {
         self.parent_with_self_name().0
     }
 
+    /// Opens the key for reading; fails when it does not exist.
     pub fn open_read(&'a self) -> Result<windows_registry::Key> {
         self.base
             .options()
@@ -393,7 +394,18 @@ impl<'a> Registry<'a> {
             .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
+    /// Opens the key for reading and writing; fails when it does not exist.
     pub fn open_write(&'a self) -> Result<windows_registry::Key> {
+        self.base
+            .options()
+            .read()
+            .write()
+            .open(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))
+    }
+
+    /// Opens the key for reading and writing, creating it when missing.
+    pub fn open_or_create(&'a self) -> Result<windows_registry::Key> {
         self.base
             .options()
             .read()
@@ -403,7 +415,8 @@ impl<'a> Registry<'a> {
             .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
-    pub fn open_with_tx(&'a self, tx: &Transaction) -> Result<windows_registry::Key> {
+    /// Opens the key for reading and writing inside `tx`, creating it when missing.
+    pub fn open_or_create_with_tx(&'a self, tx: &Transaction) -> Result<windows_registry::Key> {
         self.base
             .options()
             .read()
@@ -416,7 +429,7 @@ impl<'a> Registry<'a> {
 
     pub fn set(&self) -> Result<()> {
         let tx = Transaction::new()?;
-        let key = self.open_with_tx(&tx)?;
+        let key = self.open_or_create_with_tx(&tx)?;
         for value in &self.values {
             value
                 .set_self_value(&key)
@@ -438,20 +451,20 @@ impl<'a> Registry<'a> {
 
     pub fn remove_registry(&self) -> Result<()> {
         let (parent, self_name) = self.parent_with_self_name();
-        let key = parent.open_write()?;
+        let key = parent.open_or_create()?;
         key.remove_tree(self_name)
             .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
     pub fn remove_single_value(&self, name: impl AsRef<str>) -> Result<()> {
-        let key = self.open_write()?;
+        let key = self.open_or_create()?;
         key.remove_value(name.as_ref())
             .map_err(|e| Error::from(e).with_value(name.as_ref()))
     }
 
     pub fn remove_values(&self) -> Result<()> {
         let tx = Transaction::new()?;
-        let key = self.open_with_tx(&tx)?;
+        let key = self.open_or_create_with_tx(&tx)?;
         for value in &self.values {
             value
                 .remove_self(&key)
@@ -565,7 +578,7 @@ mod tests {
         assert_eq!(err.value(), Some("x"));
 
         // REG_NONE is not representable, so reading it yields UnsupportedType.
-        reg.open_write()
+        reg.open_or_create()
             .unwrap()
             .set_bytes("none", windows_registry::Type::Other(0), &[1, 2])
             .unwrap();
