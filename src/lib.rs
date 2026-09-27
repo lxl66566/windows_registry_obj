@@ -129,6 +129,23 @@ impl std::fmt::Display for BaseKey {
     }
 }
 
+impl std::str::FromStr for BaseKey {
+    type Err = Error;
+
+    /// Accepts the long form emitted by `Display` and the conventional short
+    /// aliases (HKCR, HKCC, HKCU, HKLM, HKU), case-insensitively.
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "HKEY_CLASSES_ROOT" | "HKCR" => Ok(Self::ClassesRoot),
+            "HKEY_CURRENT_CONFIG" | "HKCC" => Ok(Self::CurrentConfig),
+            "HKEY_CURRENT_USER" | "HKCU" => Ok(Self::CurrentUser),
+            "HKEY_LOCAL_MACHINE" | "HKLM" => Ok(Self::LocalMachine),
+            "HKEY_USERS" | "HKU" => Ok(Self::Users),
+            _ => Err(Error::new(ErrorKind::UnknownBaseKey(s.to_string()))),
+        }
+    }
+}
+
 impl BaseKey {
     /// The underlying predefined root [`Key`] handle.
     #[must_use]
@@ -332,11 +349,49 @@ pub struct Registry<'a> {
 /// A [`RegValue`] without borrowed data.
 pub type RegValueOwned = RegValue<'static>;
 
+/// Trims leading and trailing backslashes so the stored path is canonical.
+fn normalize_path(path: Cow<'_, str>) -> Cow<'_, str> {
+    match path {
+        Cow::Borrowed(s) => Cow::Borrowed(s.trim_matches('\\')),
+        Cow::Owned(s) => {
+            let trimmed = s.trim_matches('\\');
+            if trimmed.len() == s.len() {
+                Cow::Owned(s)
+            } else {
+                Cow::Owned(trimmed.to_string())
+            }
+        },
+    }
+}
+
+impl std::fmt::Display for Registry<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.base)?;
+        if !self.key_path.is_empty() {
+            write!(f, "\\{}", self.key_path)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::str::FromStr for Registry<'static> {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.split_once('\\') {
+            Some((base, path)) => Ok(base.parse::<BaseKey>()?.reg(path.to_string())),
+            None => s.parse::<BaseKey>().map(|base| base.reg("")),
+        }
+    }
+}
+
 impl<'a> Registry<'a> {
+    /// Creates a registry reference; leading and trailing backslashes in
+    /// `key_path` are trimmed, an empty path addresses the base root itself.
     pub fn new(base: BaseKey, key_path: impl Into<Cow<'a, str>>) -> Self {
         Self {
             base,
-            key_path: key_path.into(),
+            key_path: normalize_path(key_path.into()),
             values: Vec::new(),
             volatile: false,
         }
@@ -388,26 +443,22 @@ impl<'a> Registry<'a> {
         self
     }
 
+    /// The full path as shown by `Display`, e.g. `HKEY_CURRENT_USER\Software\MyApp`.
     #[must_use]
     pub fn full_path(&self) -> String {
-        let mut path = self.base.to_string();
-        if self.key_path.as_ref() != "" {
-            path.push('\\');
-            path.push_str(self.key_path.as_ref());
-        }
-        path
+        self.to_string()
     }
 
     /// Splits the path into the parent key and own name; `None` when this is a root key.
+    /// The path is canonical: no leading or trailing backslashes.
     fn split_parent(&'a self) -> Option<(Self, &'a str)> {
-        let path = self.key_path.trim_end_matches('\\');
-        if path.is_empty() {
+        if self.key_path.is_empty() {
             return None;
         }
-        let (parent, name) = match path.rsplit_once('\\') {
+        let (parent, name) = match self.key_path.rsplit_once('\\') {
             Some((parent, name)) => (Self::new(self.base, parent), name),
             // a direct child of the base root
-            None => (Self::new(self.base, ""), path),
+            None => (Self::new(self.base, ""), self.key_path.as_ref()),
         };
         Some((parent, name))
     }
@@ -674,6 +725,42 @@ mod tests {
             BaseKey::CurrentUser.reg("").full_path(),
             "HKEY_CURRENT_USER"
         );
+        // Paths are canonicalized at construction.
+        let reg = BaseKey::CurrentUser.reg("\\Software\\windows_registry_obj\\");
+        assert_eq!(reg.key_path(), "Software\\windows_registry_obj");
+        assert_eq!(
+            reg.full_path(),
+            "HKEY_CURRENT_USER\\Software\\windows_registry_obj"
+        );
+    }
+
+    #[test]
+    fn test_parse_display() {
+        let reg: Registry<'_> = "HKEY_CURRENT_USER\\Software\\windows_registry_obj"
+            .parse()
+            .unwrap();
+        assert_eq!(reg.base(), BaseKey::CurrentUser);
+        assert_eq!(reg.key_path(), "Software\\windows_registry_obj");
+        assert_eq!(
+            reg.to_string(),
+            "HKEY_CURRENT_USER\\Software\\windows_registry_obj"
+        );
+
+        // Short aliases and case-insensitivity.
+        let reg: Registry<'_> = "hkcu\\Software".parse().unwrap();
+        assert_eq!(reg.base(), BaseKey::CurrentUser);
+        assert_eq!(reg.key_path(), "Software");
+
+        // A bare base key addresses the root itself, and Display round-trips.
+        let reg: Registry<'_> = "HKEY_LOCAL_MACHINE".parse().unwrap();
+        assert_eq!(reg.key_path(), "");
+        assert_eq!(reg.to_string(), "HKEY_LOCAL_MACHINE");
+
+        let reg: Registry<'_> = reg.to_string().parse().unwrap();
+        assert_eq!(reg.key_path(), "");
+
+        let err = "HKEY_NOPE\\Software".parse::<Registry<'_>>().unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::UnknownBaseKey(_)));
     }
 
     #[test]
