@@ -1,9 +1,112 @@
 use std::{borrow::Cow, ops::Deref};
 
 pub use windows_registry::{
-    CLASSES_ROOT, CURRENT_CONFIG, CURRENT_USER, LOCAL_MACHINE, Result, Transaction, USERS,
+    CLASSES_ROOT, CURRENT_CONFIG, CURRENT_USER, LOCAL_MACHINE, Transaction, USERS,
 };
-pub use windows_result::{Error, HRESULT};
+pub use windows_result::HRESULT;
+
+/// Crate result type with contextual [`Error`].
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// The cause of a registry operation failure.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ErrorKind {
+    /// A Windows API call failed.
+    Win32(windows_result::Error),
+    /// The target is a registry root key, which cannot be removed or renamed.
+    RootKey,
+    /// The value type is not representable by `RegValueData`; holds the raw type code.
+    UnsupportedType(u32),
+    /// Parsing failed because the base key segment is unknown; holds the offending segment.
+    UnknownBaseKey(String),
+}
+
+/// A registry error carrying optional key path and value name context.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Error {
+    kind: ErrorKind,
+    path: Option<String>,
+    value: Option<String>,
+}
+
+impl Error {
+    pub(crate) fn new(kind: ErrorKind) -> Self {
+        Self {
+            kind,
+            path: None,
+            value: None,
+        }
+    }
+
+    /// Attaches the full key path of the failed operation.
+    pub(crate) fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    /// Attaches the value name of the failed operation.
+    pub(crate) fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    /// The cause of the failure.
+    #[must_use]
+    pub fn kind(&self) -> &ErrorKind {
+        &self.kind
+    }
+
+    /// The full key path involved, when known.
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    /// The value name involved, when known.
+    #[must_use]
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.kind, f)?;
+        if let Some(path) = &self.path {
+            write!(f, " (key '{path}')")?;
+        }
+        if let Some(value) = &self.value {
+            write!(f, " (value '{value}')")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Win32(err) => std::fmt::Display::fmt(err, f),
+            Self::RootKey => write!(f, "a registry root key cannot be removed or renamed"),
+            Self::UnsupportedType(ty) => write!(f, "registry value type {ty} is not supported"),
+            Self::UnknownBaseKey(segment) => write!(f, "unknown base key '{segment}'"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            ErrorKind::Win32(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<windows_result::Error> for Error {
+    fn from(err: windows_result::Error) -> Self {
+        Self::new(ErrorKind::Win32(err))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaseKey {
@@ -157,8 +260,8 @@ impl TryFrom<windows_registry::Value> for RegValueDataOwned {
                 let v: Vec<String> = value.try_into()?;
                 RegValueData::MultiString(v.into_iter().map(Cow::Owned).collect())
             },
-            windows_registry::Type::Other(_) => {
-                return Err(Self::Error::from_hresult(HRESULT::from_win32(13u32)));
+            windows_registry::Type::Other(ty) => {
+                return Err(Error::new(ErrorKind::UnsupportedType(ty)));
             },
         };
         Ok(ret)
@@ -185,37 +288,44 @@ where
     }
 }
 
+/// Writes `data` as `name` into `key`, attaching the value name on failure.
+fn write_value(key: &windows_registry::Key, name: &str, data: &RegValueData<'_>) -> Result<()> {
+    let result = match data {
+        RegValueData::String(s) => key.set_string(name, s.as_ref()),
+        RegValueData::ExpandableString(s) => key.set_expand_string(name, s.as_ref()),
+        RegValueData::DWord(value) => key.set_u32(name, *value),
+        RegValueData::QWord(value) => key.set_u64(name, *value),
+        RegValueData::Binary(value) => {
+            key.set_bytes(name, windows_registry::Type::Bytes, value.as_ref())
+        },
+        RegValueData::MultiString(value) => key.set_multi_string(
+            name,
+            value
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
+    };
+    result.map_err(|e| Error::from(e).with_value(name))
+}
+
 impl RegValue<'_> {
     pub fn set_self_value(&self, key: &windows_registry::Key) -> Result<()> {
-        match self.data {
-            RegValueData::String(ref s) => key.set_string(self.name.as_ref(), s.as_ref()),
-            RegValueData::ExpandableString(ref s) => {
-                key.set_expand_string(self.name.as_ref(), s.as_ref())
-            },
-            RegValueData::DWord(value) => key.set_u32(self.name.as_ref(), value),
-            RegValueData::QWord(value) => key.set_u64(self.name.as_ref(), value),
-            RegValueData::Binary(ref value) => key.set_bytes(
-                self.name.as_ref(),
-                windows_registry::Type::Bytes,
-                value.as_ref(),
-            ),
-            RegValueData::MultiString(ref value) => key.set_multi_string(
-                self.name.as_ref(),
-                value
-                    .iter()
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            ),
-        }
+        write_value(key, self.name.as_ref(), &self.data)
     }
 
     pub fn get(key: &windows_registry::Key, name: impl AsRef<str>) -> Result<RegValueDataOwned> {
-        RegValueData::try_from(key.get_value(name)?)
+        let name = name.as_ref();
+        let value = key
+            .get_value(name)
+            .map_err(|e| Error::from(e).with_value(name))?;
+        RegValueDataOwned::try_from(value).map_err(|e| e.with_value(name))
     }
 
     pub fn remove_self(&self, key: &windows_registry::Key) -> Result<()> {
         key.remove_value(self.name.as_ref())
+            .map_err(|e| Error::from(e).with_value(self.name.as_ref()))
     }
 }
 
@@ -276,7 +386,11 @@ impl<'a> Registry<'a> {
     }
 
     pub fn open_read(&'a self) -> Result<windows_registry::Key> {
-        self.base.options().read().open(self.key_path.as_ref())
+        self.base
+            .options()
+            .read()
+            .open(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
     pub fn open_write(&'a self) -> Result<windows_registry::Key> {
@@ -286,6 +400,7 @@ impl<'a> Registry<'a> {
             .write()
             .create()
             .open(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
     pub fn open_with_tx(&'a self, tx: &Transaction) -> Result<windows_registry::Key> {
@@ -296,58 +411,80 @@ impl<'a> Registry<'a> {
             .create()
             .transaction(tx)
             .open(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
     pub fn set(&self) -> Result<()> {
         let tx = Transaction::new()?;
         let key = self.open_with_tx(&tx)?;
         for value in &self.values {
-            value.set_self_value(&key)?;
+            value
+                .set_self_value(&key)
+                .map_err(|e| e.with_path(self.full_path()))?;
         }
         tx.commit()?;
         Ok(())
     }
 
     pub fn set_single_value(&self, value: &RegValue<'_>) -> Result<()> {
-        let key = self.base.create(self.key_path.as_ref())?;
-        value.set_self_value(&key)
+        let key = self
+            .base
+            .create(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))?;
+        value
+            .set_self_value(&key)
+            .map_err(|e| e.with_path(self.full_path()))
     }
 
     pub fn remove_registry(&self) -> Result<()> {
         let (parent, self_name) = self.parent_with_self_name();
         let key = parent.open_write()?;
-        key.remove_tree(self_name)?;
-        Ok(())
+        key.remove_tree(self_name)
+            .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
     pub fn remove_single_value(&self, name: impl AsRef<str>) -> Result<()> {
         let key = self.open_write()?;
-        key.remove_value(name)
+        key.remove_value(name.as_ref())
+            .map_err(|e| Error::from(e).with_value(name.as_ref()))
     }
 
     pub fn remove_values(&self) -> Result<()> {
         let tx = Transaction::new()?;
         let key = self.open_with_tx(&tx)?;
         for value in &self.values {
-            value.remove_self(&key)?;
+            value
+                .remove_self(&key)
+                .map_err(|e| e.with_path(self.full_path()))?;
         }
         tx.commit()?;
         Ok(())
     }
 
     pub fn get_value(&self, name: impl AsRef<str>) -> Result<RegValueDataOwned> {
-        let key = self.base.options().read().open(self.key_path.as_ref())?;
-        RegValue::get(&key, name)
+        let key = self
+            .base
+            .options()
+            .read()
+            .open(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))?;
+        RegValue::get(&key, name).map_err(|e| e.with_path(self.full_path()))
     }
 
     pub fn get_values(
         &self,
         names: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<Vec<RegValueDataOwned>> {
-        let key = self.base.options().read().open(self.key_path.as_ref())?;
+        let key = self
+            .base
+            .options()
+            .read()
+            .open(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))?;
         let mut values = vec![];
         for name in names {
-            values.push(RegValue::get(&key, name)?);
+            let value = RegValue::get(&key, name).map_err(|e| e.with_path(self.full_path()))?;
+            values.push(value);
         }
         Ok(values)
     }
@@ -405,5 +542,37 @@ mod tests {
             BaseKey::CurrentUser.reg("").full_path(),
             "HKEY_CURRENT_USER"
         );
+    }
+
+    #[test]
+    fn test_error_context() {
+        let reg = BaseKey::CurrentUser.reg("Software\\windows_registry_obj\\error_ctx");
+
+        // Missing key: the open failure carries the path, no value name yet.
+        let err = reg.get_value("x").unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::Win32(_)));
+        assert_eq!(
+            err.path(),
+            Some("HKEY_CURRENT_USER\\Software\\windows_registry_obj\\error_ctx")
+        );
+        assert_eq!(err.value(), None);
+
+        // Existing key, missing value: both path and value name are attached.
+        reg.set().unwrap();
+        let err = reg.get_value("x").unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::Win32(_)));
+        assert_eq!(err.path(), Some(reg.full_path().as_str()));
+        assert_eq!(err.value(), Some("x"));
+
+        // REG_NONE is not representable, so reading it yields UnsupportedType.
+        reg.open_write()
+            .unwrap()
+            .set_bytes("none", windows_registry::Type::Other(0), &[1, 2])
+            .unwrap();
+        let err = reg.get_value("none").unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::UnsupportedType(0)));
+        assert_eq!(err.value(), Some("none"));
+
+        reg.remove_registry().unwrap();
     }
 }
