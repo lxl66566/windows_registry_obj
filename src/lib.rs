@@ -329,17 +329,10 @@ impl TryFrom<Value> for RegValueDataOwned {
             Type::String => RegValueData::String(Cow::Owned(value.try_into()?)),
             Type::ExpandString => RegValueData::ExpandableString(Cow::Owned(value.try_into()?)),
             Type::Bytes => RegValueData::Binary(Cow::Owned(value.to_vec())),
-            // Decode REG_MULTI_SZ ourselves: the sequence is NUL-terminated
-            // strings followed by a terminating empty string. windows-registry's
-            // Vec<String> conversion keeps those terminator artifacts.
-            Type::MultiString => RegValueData::MultiString(
-                value
-                    .as_wide()
-                    .split(|c| *c == 0)
-                    .take_while(|s| !s.is_empty())
-                    .map(|s| Cow::Owned(String::from_utf16_lossy(s)))
-                    .collect(),
-            ),
+            Type::MultiString => {
+                let v: Vec<String> = value.try_into()?;
+                RegValueData::MultiString(v.into_iter().map(Cow::Owned).collect())
+            },
             Type::Other(ty) => {
                 return Err(Error::new(ErrorKind::UnsupportedType(ty)));
             },
