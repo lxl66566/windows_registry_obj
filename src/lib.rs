@@ -329,10 +329,17 @@ impl TryFrom<Value> for RegValueDataOwned {
             Type::String => RegValueData::String(Cow::Owned(value.try_into()?)),
             Type::ExpandString => RegValueData::ExpandableString(Cow::Owned(value.try_into()?)),
             Type::Bytes => RegValueData::Binary(Cow::Owned(value.to_vec())),
-            Type::MultiString => {
-                let v: Vec<String> = value.try_into()?;
-                RegValueData::MultiString(v.into_iter().map(Cow::Owned).collect())
-            },
+            // Decode REG_MULTI_SZ ourselves: the sequence is NUL-terminated
+            // strings followed by a terminating empty string. windows-registry's
+            // Vec<String> conversion keeps those terminator artifacts.
+            Type::MultiString => RegValueData::MultiString(
+                value
+                    .as_wide()
+                    .split(|c| *c == 0)
+                    .take_while(|s| !s.is_empty())
+                    .map(|s| Cow::Owned(String::from_utf16_lossy(s)))
+                    .collect(),
+            ),
             Type::Other(ty) => {
                 return Err(Error::new(ErrorKind::UnsupportedType(ty)));
             },
@@ -827,6 +834,48 @@ mod tests {
 
         let err = "HKEY_NOPE\\Software".parse::<Registry<'_>>().unwrap_err();
         assert!(matches!(err.kind(), ErrorKind::UnknownBaseKey(_)));
+    }
+
+    /// Every registry value type must survive a set/read round-trip unchanged.
+    #[test]
+    fn test_value_roundtrip() {
+        let _lock = LOCK.lock().unwrap();
+        let reg = BaseKey::CurrentUser.reg("Software\\windows_registry_obj\\roundtrip");
+        let _cleanup = guard("Software\\windows_registry_obj\\roundtrip");
+
+        let reg = reg
+            .with_value(("sz", "plain"))
+            .with_value((
+                "expand",
+                RegValueData::ExpandableString(Cow::Borrowed("%PATH%")),
+            ))
+            .with_value(("dword", 7u32))
+            .with_value(("qword", 1u64 << 40))
+            .with_value(("binary", &[1u8, 2, 3][..]))
+            .with_value(("multi", &["a", "b"]))
+            .with_value(("multi_owned", vec!["x".to_string(), "y".to_string()]));
+        reg.set().unwrap();
+
+        assert_eq!(reg.get_value("sz").unwrap().as_str(), Some("plain"));
+        assert_eq!(
+            reg.get_value("expand").unwrap().as_expandable_string(),
+            Some("%PATH%")
+        );
+        assert_eq!(reg.get_value("dword").unwrap().as_u32(), Some(7));
+        assert_eq!(reg.get_value("qword").unwrap().as_u64(), Some(1 << 40));
+        assert_eq!(
+            reg.get_value("binary").unwrap().as_bytes(),
+            Some(&[1u8, 2, 3][..])
+        );
+        assert_eq!(
+            reg.get_value("multi").unwrap(),
+            RegValueData::from(&["a", "b"])
+        );
+        assert_eq!(
+            reg.get_value("multi_owned").unwrap(),
+            RegValueData::from(vec!["x".to_string(), "y".to_string()])
+        );
+        assert_eq!(reg.get_value("multi").unwrap().as_u32(), None);
     }
 
     #[test]
