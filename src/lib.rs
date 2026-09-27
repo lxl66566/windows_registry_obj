@@ -457,14 +457,15 @@ impl<'a> Registry<'a> {
         Ok(())
     }
 
+    /// Writes a single value inside its own transaction, matching [`Registry::set`].
     pub fn set_single_value(&self, value: &RegValue<'_>) -> Result<()> {
-        let key = self
-            .base
-            .create(self.key_path.as_ref())
-            .map_err(|e| Error::from(e).with_path(self.full_path()))?;
+        let tx = Transaction::new()?;
+        let key = self.open_or_create_with_tx(&tx)?;
         value
             .set_self_value(&key)
-            .map_err(|e| e.with_path(self.full_path()))
+            .map_err(|e| e.with_path(self.full_path()))?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Removes the whole key and its subtree; a registry root key cannot be removed.
@@ -660,5 +661,15 @@ mod tests {
         assert!(reg.remove_values().is_err());
         assert!(reg.remove_single_value("a").is_err());
         assert!(reg.open_read().is_err());
+    }
+
+    #[test]
+    fn test_set_single_value() {
+        let _lock = LOCK.lock().unwrap();
+        let reg = BaseKey::CurrentUser.reg("Software\\windows_registry_obj\\single_value");
+        let _cleanup = guard("Software\\windows_registry_obj\\single_value");
+
+        reg.set_single_value(&("answer", 42u32).into()).unwrap();
+        assert_eq!(reg.get_value("answer").unwrap(), RegValueData::DWord(42));
     }
 }
