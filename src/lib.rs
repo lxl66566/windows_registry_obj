@@ -302,17 +302,17 @@ fn write_value(key: &windows_registry::Key, name: &str, data: &RegValueData<'_>)
     result.map_err(|e| Error::from(e).with_value(name))
 }
 
+/// Reads `name` from `key`, attaching the value name on failure.
+fn read_value(key: &windows_registry::Key, name: &str) -> Result<RegValueDataOwned> {
+    let value = key
+        .get_value(name)
+        .map_err(|e| Error::from(e).with_value(name))?;
+    RegValueDataOwned::try_from(value).map_err(|e| e.with_value(name))
+}
+
 impl RegValue<'_> {
     pub fn set_self_value(&self, key: &windows_registry::Key) -> Result<()> {
         write_value(key, self.name.as_ref(), &self.data)
-    }
-
-    pub fn get(key: &windows_registry::Key, name: impl AsRef<str>) -> Result<RegValueDataOwned> {
-        let name = name.as_ref();
-        let value = key
-            .get_value(name)
-            .map_err(|e| Error::from(e).with_value(name))?;
-        RegValueDataOwned::try_from(value).map_err(|e| e.with_value(name))
     }
 
     pub fn remove_self(&self, key: &windows_registry::Key) -> Result<()> {
@@ -495,30 +495,19 @@ impl<'a> Registry<'a> {
     }
 
     pub fn get_value(&self, name: impl AsRef<str>) -> Result<RegValueDataOwned> {
-        let key = self
-            .base
-            .as_key()
-            .options()
-            .read()
-            .open(self.key_path.as_ref())
-            .map_err(|e| Error::from(e).with_path(self.full_path()))?;
-        RegValue::get(&key, name).map_err(|e| e.with_path(self.full_path()))
+        let key = self.open_read()?;
+        read_value(&key, name.as_ref()).map_err(|e| e.with_path(self.full_path()))
     }
 
     pub fn get_values(
         &self,
         names: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<Vec<RegValueDataOwned>> {
-        let key = self
-            .base
-            .as_key()
-            .options()
-            .read()
-            .open(self.key_path.as_ref())
-            .map_err(|e| Error::from(e).with_path(self.full_path()))?;
+        let key = self.open_read()?;
         let mut values = vec![];
         for name in names {
-            let value = RegValue::get(&key, name).map_err(|e| e.with_path(self.full_path()))?;
+            let value =
+                read_value(&key, name.as_ref()).map_err(|e| e.with_path(self.full_path()))?;
             values.push(value);
         }
         Ok(values)
