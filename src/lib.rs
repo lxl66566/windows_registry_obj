@@ -1,4 +1,5 @@
 use std::{borrow::Cow, ops::Deref};
+
 pub use windows_registry::{
     CLASSES_ROOT, CURRENT_CONFIG, CURRENT_USER, LOCAL_MACHINE, Result, Transaction, USERS,
 };
@@ -120,12 +121,13 @@ impl From<&'_ RegValueData<'_>> for windows_registry::Type {
 pub type RegValueDataOwned = RegValueData<'static>;
 
 impl RegValueData<'_> {
+    #[must_use]
     pub fn into_owned(self) -> RegValueDataOwned {
         match self {
             RegValueData::String(s) => RegValueData::String(Cow::Owned(s.into_owned())),
             RegValueData::ExpandableString(s) => {
                 RegValueData::ExpandableString(Cow::Owned(s.into_owned()))
-            }
+            },
             RegValueData::Binary(b) => RegValueData::Binary(Cow::Owned(b.into_owned())),
             RegValueData::MultiString(s) => RegValueData::MultiString(
                 s.into_iter()
@@ -139,7 +141,8 @@ impl RegValueData<'_> {
 }
 
 impl TryFrom<windows_registry::Value> for RegValueDataOwned {
-    type Error = windows_result::Error;
+    type Error = Error;
+
     /// Converts a `windows_registry::Value` into a `RegValueData`.
     fn try_from(value: windows_registry::Value) -> std::result::Result<Self, Self::Error> {
         let ret = match value.ty() {
@@ -148,15 +151,15 @@ impl TryFrom<windows_registry::Value> for RegValueDataOwned {
             windows_registry::Type::String => RegValueData::String(Cow::Owned(value.try_into()?)),
             windows_registry::Type::ExpandString => {
                 RegValueData::ExpandableString(Cow::Owned(value.try_into()?))
-            }
+            },
             windows_registry::Type::Bytes => RegValueData::Binary(Cow::Owned(value.to_vec())),
             windows_registry::Type::MultiString => {
                 let v: Vec<String> = value.try_into()?;
                 RegValueData::MultiString(v.into_iter().map(Cow::Owned).collect())
-            }
-            _ => {
+            },
+            windows_registry::Type::Other(_) => {
                 return Err(Self::Error::from_hresult(HRESULT::from_win32(13u32)));
-            }
+            },
         };
         Ok(ret)
     }
@@ -182,13 +185,13 @@ where
     }
 }
 
-impl<'a> RegValue<'a> {
+impl RegValue<'_> {
     pub fn set_self_value(&self, key: &windows_registry::Key) -> Result<()> {
         match self.data {
             RegValueData::String(ref s) => key.set_string(self.name.as_ref(), s.as_ref()),
             RegValueData::ExpandableString(ref s) => {
                 key.set_expand_string(self.name.as_ref(), s.as_ref())
-            }
+            },
             RegValueData::DWord(value) => key.set_u32(self.name.as_ref(), value),
             RegValueData::QWord(value) => key.set_u64(self.name.as_ref(), value),
             RegValueData::Binary(ref value) => key.set_bytes(
@@ -200,7 +203,7 @@ impl<'a> RegValue<'a> {
                 self.name.as_ref(),
                 value
                     .iter()
-                    .map(|x| x.as_ref())
+                    .map(AsRef::as_ref)
                     .collect::<Vec<_>>()
                     .as_slice(),
             ),
@@ -233,19 +236,22 @@ impl<'a> Registry<'a> {
         }
     }
 
+    #[must_use]
     pub fn with_value(mut self, value: impl Into<RegValue<'a>>) -> Self {
         self.values.push(value.into());
         self
     }
 
+    #[must_use]
     pub fn with_values(
         mut self,
         values: impl IntoIterator<Item = impl Into<RegValue<'a>>>,
     ) -> Self {
-        self.values.extend(values.into_iter().map(|x| x.into()));
+        self.values.extend(values.into_iter().map(Into::into));
         self
     }
 
+    #[must_use]
     pub fn full_path(&self) -> String {
         let mut path = self.base.to_string();
         if self.key_path.as_ref() != "" {
@@ -264,6 +270,7 @@ impl<'a> Registry<'a> {
         }
     }
 
+    #[must_use]
     pub fn parent(&'a self) -> Self {
         self.parent_with_self_name().0
     }
@@ -294,14 +301,14 @@ impl<'a> Registry<'a> {
     pub fn set(&self) -> Result<()> {
         let tx = Transaction::new()?;
         let key = self.open_with_tx(&tx)?;
-        for value in self.values.iter() {
+        for value in &self.values {
             value.set_self_value(&key)?;
         }
         tx.commit()?;
         Ok(())
     }
 
-    pub fn set_single_value(&self, value: RegValue<'a>) -> Result<()> {
+    pub fn set_single_value(&self, value: &RegValue<'_>) -> Result<()> {
         let key = self.base.create(self.key_path.as_ref())?;
         value.set_self_value(&key)
     }
@@ -321,7 +328,7 @@ impl<'a> Registry<'a> {
     pub fn remove_values(&self) -> Result<()> {
         let tx = Transaction::new()?;
         let key = self.open_with_tx(&tx)?;
-        for value in self.values.iter() {
+        for value in &self.values {
             value.remove_self(&key)?;
         }
         tx.commit()?;
@@ -339,7 +346,7 @@ impl<'a> Registry<'a> {
     ) -> Result<Vec<RegValueDataOwned>> {
         let key = self.base.options().read().open(self.key_path.as_ref())?;
         let mut values = vec![];
-        for name in names.into_iter() {
+        for name in names {
             values.push(RegValue::get(&key, name)?);
         }
         Ok(values)
@@ -353,34 +360,31 @@ mod tests {
     #[test]
     fn test_basic_ops() -> Result<()> {
         let key1 = "test1".to_string();
-        let val1 = 60;
+        let val1 = 60u32;
         let regs = [
             Registry::new(BaseKey::CurrentUser, "Software\\windows_registry_obj\\test")
                 .with_value(("", "default_value"))
-                .with_value((&key1, val1 as u32))
+                .with_value((&key1, val1))
                 .with_values([("test2", "test2_value"), ("test3", "test3_value")]),
         ];
-        for reg in regs.iter() {
+        for reg in &regs {
             reg.set()?;
         }
 
         let value = regs[0].get_value("")?;
         assert_eq!(value, RegValueData::String(Cow::Borrowed("default_value")));
         let value = regs[0].get_values([key1.as_str(), "test2", "test3"])?;
-        assert_eq!(
-            value,
-            vec![
-                RegValueData::DWord(val1 as u32),
-                RegValueData::String(Cow::Owned("test2_value".to_string())),
-                RegValueData::String(Cow::Owned("test3_value".to_string()))
-            ]
-        );
+        assert_eq!(value, vec![
+            RegValueData::DWord(val1),
+            RegValueData::String(Cow::Owned("test2_value".to_string())),
+            RegValueData::String(Cow::Owned("test3_value".to_string()))
+        ]);
 
         regs[0].remove_single_value("test3")?;
         assert!(regs[0].get_value("test2").is_ok());
         assert!(regs[0].get_value("test3").is_err());
 
-        for reg in regs.iter() {
+        for reg in &regs {
             reg.remove_registry()?;
         }
         assert!(regs[0].get_value("").is_err());

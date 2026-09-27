@@ -1,26 +1,38 @@
 [package]
-name = "windows_registry_obj"
-version = "0.1.0"
-edition = "2024"
-authors = ["lxl66566 <lxl66566@gmail.com>"]
-description = "Objective Windows Registry manipulation."
-license = "MIT"
-readme = "README.md"
-repository = "https://github.com/lxl66566/windows_registry_obj"
-homepage = "https://github.com/lxl66566/windows_registry_obj"
+name          = "windows_registry_obj"
+version       = "0.1.0"
+edition       = "2024"
+description   = "Objective Windows Registry manipulation."
 documentation = "https://docs.rs/windows_registry_obj"
-keywords = ["windows", "registry", "reg", "utility", "wrapper"]
-categories = ["os::windows-apis", "config"]
-exclude = [".gitignore", ".github/*"]
+readme        = "README.md"
+repository    = "https://github.com/lxl66566/windows_registry_obj"
+license       = "MIT"
+keywords      = ["reg", "registry", "utility", "windows", "wrapper"]
+categories    = ["config", "os::windows-apis"]
+exclude       = [".github/*", ".gitignore"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets        = ["x86_64-pc-windows-msvc"]
 
 [dependencies]
 windows-registry = "0.6"
-windows-result = "0.4"
+windows-result   = "0.4"
 
 [features]
 default = []
 # serde = ["dep:serde"]
 
-[package.metadata.docs.rs]
-default-target = "x86_64-pc-windows-msvc"
-targets = ["x86_64-pc-windows-msvc"]
+[lints.clippy]
+all                     = { level = "warn", priority = -1 }
+cargo                   = { level = "warn", priority = -1 }
+doc_markdown            = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
+multiple_crate_versions = "allow"
+pedantic                = { level = "warn", priority = -1 }
+wildcard_imports        = "allow"
+
+[lints.rust]
+unsafe_code           = "allow"
+unused_qualifications = "warn"
