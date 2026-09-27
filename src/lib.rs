@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ops::Deref};
+use std::borrow::Cow;
 
 pub use windows_registry::{
     CLASSES_ROOT, CURRENT_CONFIG, CURRENT_USER, LOCAL_MACHINE, Transaction, USERS,
@@ -117,18 +117,6 @@ pub enum BaseKey {
     Users,
 }
 
-impl From<&BaseKey> for &'static windows_registry::Key {
-    fn from(base: &BaseKey) -> Self {
-        match base {
-            BaseKey::ClassesRoot => CLASSES_ROOT,
-            BaseKey::CurrentConfig => CURRENT_CONFIG,
-            BaseKey::CurrentUser => CURRENT_USER,
-            BaseKey::LocalMachine => LOCAL_MACHINE,
-            BaseKey::Users => USERS,
-        }
-    }
-}
-
 impl std::fmt::Display for BaseKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -141,15 +129,19 @@ impl std::fmt::Display for BaseKey {
     }
 }
 
-impl Deref for BaseKey {
-    type Target = windows_registry::Key;
-
-    fn deref(&self) -> &Self::Target {
-        self.into()
-    }
-}
-
 impl BaseKey {
+    /// The underlying predefined root [`windows_registry::Key`] handle.
+    #[must_use]
+    pub const fn as_key(&self) -> &'static windows_registry::Key {
+        match self {
+            BaseKey::ClassesRoot => CLASSES_ROOT,
+            BaseKey::CurrentConfig => CURRENT_CONFIG,
+            BaseKey::CurrentUser => CURRENT_USER,
+            BaseKey::LocalMachine => LOCAL_MACHINE,
+            BaseKey::Users => USERS,
+        }
+    }
+
     pub fn reg<'a>(&self, path: impl Into<Cow<'a, str>>) -> Registry<'a> {
         Registry::new(*self, path)
     }
@@ -395,6 +387,7 @@ impl<'a> Registry<'a> {
     /// Opens the key for reading; fails when it does not exist.
     pub fn open_read(&'a self) -> Result<windows_registry::Key> {
         self.base
+            .as_key()
             .options()
             .read()
             .open(self.key_path.as_ref())
@@ -404,6 +397,7 @@ impl<'a> Registry<'a> {
     /// Opens the key for reading and writing; fails when it does not exist.
     pub fn open_write(&'a self) -> Result<windows_registry::Key> {
         self.base
+            .as_key()
             .options()
             .read()
             .write()
@@ -414,6 +408,7 @@ impl<'a> Registry<'a> {
     /// Opens the key for reading and writing, creating it when missing.
     pub fn open_or_create(&'a self) -> Result<windows_registry::Key> {
         self.base
+            .as_key()
             .options()
             .read()
             .write()
@@ -425,6 +420,7 @@ impl<'a> Registry<'a> {
     /// Opens the key for reading and writing inside `tx`, creating it when missing.
     pub fn open_or_create_with_tx(&'a self, tx: &Transaction) -> Result<windows_registry::Key> {
         self.base
+            .as_key()
             .options()
             .read()
             .write()
@@ -437,6 +433,7 @@ impl<'a> Registry<'a> {
     /// Opens the key for reading and writing inside `tx`; fails when it does not exist.
     fn open_write_with_tx(&'a self, tx: &Transaction) -> Result<windows_registry::Key> {
         self.base
+            .as_key()
             .options()
             .read()
             .write()
@@ -500,6 +497,7 @@ impl<'a> Registry<'a> {
     pub fn get_value(&self, name: impl AsRef<str>) -> Result<RegValueDataOwned> {
         let key = self
             .base
+            .as_key()
             .options()
             .read()
             .open(self.key_path.as_ref())
@@ -513,6 +511,7 @@ impl<'a> Registry<'a> {
     ) -> Result<Vec<RegValueDataOwned>> {
         let key = self
             .base
+            .as_key()
             .options()
             .read()
             .open(self.key_path.as_ref())
