@@ -434,6 +434,17 @@ impl<'a> Registry<'a> {
             .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
+    /// Opens the key for reading and writing inside `tx`; fails when it does not exist.
+    fn open_write_with_tx(&'a self, tx: &Transaction) -> Result<windows_registry::Key> {
+        self.base
+            .options()
+            .read()
+            .write()
+            .transaction(tx)
+            .open(self.key_path.as_ref())
+            .map_err(|e| Error::from(e).with_path(self.full_path()))
+    }
+
     pub fn set(&self) -> Result<()> {
         let tx = Transaction::new()?;
         let key = self.open_or_create_with_tx(&tx)?;
@@ -462,20 +473,20 @@ impl<'a> Registry<'a> {
         let Some((parent, self_name)) = self.split_parent() else {
             return Err(Error::new(ErrorKind::RootKey));
         };
-        let key = parent.open_or_create()?;
+        let key = parent.open_write()?;
         key.remove_tree(self_name)
             .map_err(|e| Error::from(e).with_path(self.full_path()))
     }
 
     pub fn remove_single_value(&self, name: impl AsRef<str>) -> Result<()> {
-        let key = self.open_or_create()?;
+        let key = self.open_write()?;
         key.remove_value(name.as_ref())
             .map_err(|e| Error::from(e).with_value(name.as_ref()))
     }
 
     pub fn remove_values(&self) -> Result<()> {
         let tx = Transaction::new()?;
-        let key = self.open_or_create_with_tx(&tx)?;
+        let key = self.open_write_with_tx(&tx)?;
         for value in &self.values {
             value
                 .remove_self(&key)
@@ -626,5 +637,28 @@ mod tests {
             .remove_registry()
             .unwrap_err();
         assert!(matches!(err.kind(), ErrorKind::RootKey));
+    }
+
+    #[test]
+    fn test_remove_missing_creates_nothing() {
+        let _lock = LOCK.lock().unwrap();
+        let parent = "Software\\windows_registry_obj\\missing_parent";
+
+        // Removing a key whose parent is missing must not materialize the parent chain.
+        assert!(
+            BaseKey::CurrentUser
+                .reg("Software\\windows_registry_obj\\missing_parent\\child")
+                .remove_registry()
+                .is_err()
+        );
+        assert!(BaseKey::CurrentUser.reg(parent).open_read().is_err());
+
+        // Removing values of a missing key must not create it either.
+        let reg = BaseKey::CurrentUser
+            .reg("Software\\windows_registry_obj\\missing_key")
+            .with_value(("a", 1u32));
+        assert!(reg.remove_values().is_err());
+        assert!(reg.remove_single_value("a").is_err());
+        assert!(reg.open_read().is_err());
     }
 }
