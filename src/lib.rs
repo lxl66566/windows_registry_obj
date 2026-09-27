@@ -371,18 +371,25 @@ impl<'a> Registry<'a> {
         path
     }
 
-    fn parent_with_self_name(&'a self) -> (Self, &'a str) {
-        let key_path = self.key_path.trim_end_matches('\\').rsplit_once('\\');
-        if let Some((parent, key)) = key_path {
-            (Self::new(self.base, parent), key)
-        } else {
-            (Self::new(self.base, ""), self.key_path.as_ref())
+    /// Splits the path into the parent key and own name; `None` when this is a root key.
+    fn split_parent(&'a self) -> Option<(Self, &'a str)> {
+        let path = self.key_path.trim_end_matches('\\');
+        if path.is_empty() {
+            return None;
         }
+        let (parent, name) = match path.rsplit_once('\\') {
+            Some((parent, name)) => (Self::new(self.base, parent), name),
+            // a direct child of the base root
+            None => (Self::new(self.base, ""), path),
+        };
+        Some((parent, name))
     }
 
+    /// The parent key; a root key is its own parent.
     #[must_use]
     pub fn parent(&'a self) -> Self {
-        self.parent_with_self_name().0
+        self.split_parent()
+            .map_or_else(|| self.clone(), |(parent, _)| parent)
     }
 
     /// Opens the key for reading; fails when it does not exist.
@@ -449,8 +456,12 @@ impl<'a> Registry<'a> {
             .map_err(|e| e.with_path(self.full_path()))
     }
 
+    /// Removes the whole key and its subtree; a registry root key cannot be removed.
     pub fn remove_registry(&self) -> Result<()> {
-        let (parent, self_name) = self.parent_with_self_name();
+        // RegDeleteTree with an empty subkey deletes everything under the root.
+        let Some((parent, self_name)) = self.split_parent() else {
+            return Err(Error::new(ErrorKind::RootKey));
+        };
         let key = parent.open_or_create()?;
         key.remove_tree(self_name)
             .map_err(|e| Error::from(e).with_path(self.full_path()))
@@ -505,41 +516,57 @@ impl<'a> Registry<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// Serializes tests: concurrent transacted creation of the same intermediate
+    /// key conflicts because uncommitted keys are invisible to other transactions.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Removes the wrapped registry key on drop so failing tests do not leak state.
+    struct Guard(Registry<'static>);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = self.0.remove_registry();
+        }
+    }
+
+    fn guard(path: &'static str) -> Guard {
+        Guard(BaseKey::CurrentUser.reg(path))
+    }
 
     #[test]
     fn test_basic_ops() -> Result<()> {
+        let _lock = LOCK.lock().unwrap();
         let key1 = "test1".to_string();
         let val1 = 60u32;
-        let regs = [
-            Registry::new(BaseKey::CurrentUser, "Software\\windows_registry_obj\\test")
-                .with_value(("", "default_value"))
-                .with_value((&key1, val1))
-                .with_values([("test2", "test2_value"), ("test3", "test3_value")]),
-        ];
-        for reg in &regs {
-            reg.set()?;
-        }
+        let reg = Registry::new(BaseKey::CurrentUser, "Software\\windows_registry_obj\\test")
+            .with_value(("", "default_value"))
+            .with_value((&key1, val1))
+            .with_values([("test2", "test2_value"), ("test3", "test3_value")]);
+        let cleanup = guard("Software\\windows_registry_obj\\test");
 
-        let value = regs[0].get_value("")?;
+        reg.set()?;
+
+        let value = reg.get_value("")?;
         assert_eq!(value, RegValueData::String(Cow::Borrowed("default_value")));
-        let value = regs[0].get_values([key1.as_str(), "test2", "test3"])?;
+        let value = reg.get_values([key1.as_str(), "test2", "test3"])?;
         assert_eq!(value, vec![
             RegValueData::DWord(val1),
             RegValueData::String(Cow::Owned("test2_value".to_string())),
             RegValueData::String(Cow::Owned("test3_value".to_string()))
         ]);
 
-        regs[0].remove_single_value("test3")?;
-        assert!(regs[0].get_value("test2").is_ok());
-        assert!(regs[0].get_value("test3").is_err());
+        reg.remove_single_value("test3")?;
+        assert!(reg.get_value("test2").is_ok());
+        assert!(reg.get_value("test3").is_err());
 
-        for reg in &regs {
-            reg.remove_registry()?;
-        }
-        assert!(regs[0].get_value("").is_err());
-        assert!(regs[0].get_value(&key1).is_err());
-        assert!(regs[0].get_values(["test2", "test3"]).is_err());
+        drop(cleanup);
+        assert!(reg.get_value("").is_err());
+        assert!(reg.get_value(&key1).is_err());
+        assert!(reg.get_values(["test2", "test3"]).is_err());
         Ok(())
     }
 
@@ -559,7 +586,9 @@ mod tests {
 
     #[test]
     fn test_error_context() {
+        let _lock = LOCK.lock().unwrap();
         let reg = BaseKey::CurrentUser.reg("Software\\windows_registry_obj\\error_ctx");
+        let _cleanup = guard("Software\\windows_registry_obj\\error_ctx");
 
         // Missing key: the open failure carries the path, no value name yet.
         let err = reg.get_value("x").unwrap_err();
@@ -585,7 +614,17 @@ mod tests {
         let err = reg.get_value("none").unwrap_err();
         assert!(matches!(err.kind(), ErrorKind::UnsupportedType(0)));
         assert_eq!(err.value(), Some("none"));
+    }
 
-        reg.remove_registry().unwrap();
+    #[test]
+    fn test_remove_root_rejected() {
+        let err = BaseKey::CurrentUser.reg("").remove_registry().unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::RootKey));
+        // A path of bare backslashes is still the root.
+        let err = BaseKey::CurrentUser
+            .reg("\\")
+            .remove_registry()
+            .unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::RootKey));
     }
 }
