@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "windows_registry_obj"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "windows-registry",
  "windows-result",

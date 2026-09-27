@@ -1,7 +1,8 @@
 [package]
 name          = "windows_registry_obj"
-version       = "0.1.0"
+version       = "0.2.0"
 edition       = "2024"
+rust-version  = "1.95"
 description   = "Objective Windows Registry manipulation."
 documentation = "https://docs.rs/windows_registry_obj"
 readme        = "README.md"
@@ -9,7 +10,7 @@ repository    = "https://github.com/lxl66566/windows_registry_obj"
 license       = "MIT"
 keywords      = ["reg", "registry", "utility", "windows", "wrapper"]
 categories    = ["config", "os::windows-apis"]
-exclude       = [".github/*", ".gitignore"]
+exclude       = [".github/*", ".gitignore", ".tombi.toml", "rustfmt.toml"]
 
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
