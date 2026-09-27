@@ -16,8 +16,8 @@ default-target = "x86_64-pc-windows-msvc"
 targets        = ["x86_64-pc-windows-msvc"]
 
 [dependencies]
-windows-registry = "0.6"
-windows-result   = "0.4"
+windows-registry = "0.100"
+windows-result   = "0.100"
 
 [features]
 default = []
